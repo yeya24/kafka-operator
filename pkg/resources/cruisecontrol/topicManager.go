@@ -21,7 +21,7 @@ import (
 	"fmt"
 
 	"emperror.dev/errors"
-	banzaicloudv1alpha1 "github.com/banzaicloud/kafka-operator/pkg/apis/banzaicloud/v1alpha1"
+	banzaicloudv1alpha1 "github.com/banzaicloud/kafka-operator/api/v1alpha1"
 	"github.com/banzaicloud/kafka-operator/pkg/resources/kafka"
 	"github.com/go-logr/logr"
 	"github.com/goph/emperror"
