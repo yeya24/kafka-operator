@@ -40,7 +40,7 @@ import (
 
 	banzaiistiov1beta1 "github.com/banzaicloud/istio-operator/pkg/apis/istio/v1beta1"
 
-	certv1 "github.com/jetstack/cert-manager/pkg/apis/certmanager/v1alpha2"
+	certv1 "github.com/jetstack/cert-manager/pkg/apis/certmanager/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
@@ -75,14 +75,15 @@ func init() {
 
 func main() {
 	var (
-		namespaces           string
-		metricsAddr          string
-		enableLeaderElection bool
-		webhookCertDir       string
-		webhookDisabled      bool
-		developmentLogging   bool
-		verboseLogging       bool
-		certManagerEnabled   bool
+		namespaces                        string
+		metricsAddr                       string
+		enableLeaderElection              bool
+		webhookCertDir                    string
+		webhookDisabled                   bool
+		developmentLogging                bool
+		verboseLogging                    bool
+		certManagerEnabled                bool
+		maxKafkaTopicConcurrentReconciles int
 	)
 
 	flag.StringVar(&namespaces, "namespaces", "", "Comma separated list of namespaces where operator listens for resources")
@@ -94,6 +95,7 @@ func main() {
 	flag.BoolVar(&developmentLogging, "development", false, "Enable development logging")
 	flag.BoolVar(&verboseLogging, "verbose", false, "Enable verbose logging")
 	flag.BoolVar(&certManagerEnabled, "cert-manager-enabled", false, "Enable cert-manager integration")
+	flag.IntVar(&maxKafkaTopicConcurrentReconciles, "max-kafka-topic-concurrent-reconciles", 10, "Define max amount of concurrent KafkaTopic reconciles")
 	flag.Parse()
 
 	ctrl.SetLogger(util.CreateLogger(verboseLogging, developmentLogging))
@@ -150,7 +152,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = controllers.SetupKafkaTopicWithManager(mgr); err != nil {
+	if err = controllers.SetupKafkaTopicWithManager(mgr, maxKafkaTopicConcurrentReconciles); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "KafkaTopic")
 		os.Exit(1)
 	}

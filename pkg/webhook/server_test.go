@@ -20,7 +20,7 @@ import (
 	"reflect"
 	"testing"
 
-	certv1 "github.com/jetstack/cert-manager/pkg/apis/certmanager/v1alpha2"
+	certv1 "github.com/jetstack/cert-manager/pkg/apis/certmanager/v1"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,11 +34,11 @@ import (
 )
 
 func newMockServer() (*webhookServer, error) {
-	return newMockServerWithClients(fake.NewFakeClientWithScheme(scheme.Scheme), kafkaclient.NewMockFromCluster)
+	return newMockServerWithClients(fake.NewClientBuilder().WithScheme(scheme.Scheme).Build(), kafkaclient.NewMockFromCluster)
 }
 
 func newMockServerWithClients(c client.Client, kafkaClientProvider func(client client.Client,
-	cluster *v1beta1.KafkaCluster) (kafkaclient.KafkaClient, error)) (*webhookServer, error) {
+	cluster *v1beta1.KafkaCluster) (kafkaclient.KafkaClient, func(), error)) (*webhookServer, error) {
 	if err := certv1.AddToScheme(scheme.Scheme); err != nil {
 		return nil, err
 	}
@@ -57,14 +57,14 @@ func newMockServerWithClients(c client.Client, kafkaClientProvider func(client c
 }
 
 func TestNewServer(t *testing.T) {
-	server := newWebHookServer(fake.NewFakeClient(), scheme.Scheme)
+	server := newWebHookServer(fake.NewClientBuilder().Build(), scheme.Scheme)
 	if reflect.ValueOf(server.newKafkaFromCluster).Pointer() != reflect.ValueOf(kafkaclient.NewFromCluster).Pointer() {
 		t.Error("Expected newKafkaFromCluster ptr -> kafkaclient.NewFromCluster")
 	}
 }
 
 func TestNewServerMux(t *testing.T) {
-	mux := newWebhookServerMux(fake.NewFakeClient(), scheme.Scheme)
+	mux := newWebhookServerMux(fake.NewClientBuilder().Build(), scheme.Scheme)
 	var buf bytes.Buffer
 	req, _ := http.NewRequest("POST", "/validate", &buf)
 	if _, pattern := mux.Handler(req); pattern == "" {

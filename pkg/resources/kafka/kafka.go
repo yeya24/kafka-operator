@@ -37,6 +37,7 @@ import (
 	"github.com/banzaicloud/kafka-operator/api/v1alpha1"
 	"github.com/banzaicloud/kafka-operator/api/v1beta1"
 	"github.com/banzaicloud/kafka-operator/pkg/errorfactory"
+	"github.com/banzaicloud/kafka-operator/pkg/jmxextractor"
 	"github.com/banzaicloud/kafka-operator/pkg/k8sutil"
 	"github.com/banzaicloud/kafka-operator/pkg/kafkaclient"
 	"github.com/banzaicloud/kafka-operator/pkg/pki"
@@ -206,7 +207,7 @@ func (r *Reconciler) Reconcile(log logr.Logger) error {
 
 	brokersVolumes := make(map[string][]*corev1.PersistentVolumeClaim, len(r.KafkaCluster.Spec.Brokers))
 	for _, broker := range r.KafkaCluster.Spec.Brokers {
-		brokerConfig, err := util.GetBrokerConfig(broker, r.KafkaCluster.Spec)
+		brokerConfig, err := broker.GetBrokerConfig(r.KafkaCluster.Spec)
 		if err != nil {
 			return errors.WrapIf(err, "failed to reconcile resource")
 		}
@@ -229,7 +230,7 @@ func (r *Reconciler) Reconcile(log logr.Logger) error {
 
 	reorderedBrokers := r.reorderBrokers(log, r.KafkaCluster.Spec.Brokers)
 	for _, broker := range reorderedBrokers {
-		brokerConfig, err := util.GetBrokerConfig(broker, r.KafkaCluster.Spec)
+		brokerConfig, err := broker.GetBrokerConfig(r.KafkaCluster.Spec)
 		if err != nil {
 			return errors.WrapIf(err, "failed to reconcile resource")
 		}
@@ -268,12 +269,15 @@ func (r *Reconciler) Reconcile(log logr.Logger) error {
 		if err != nil {
 			return err
 		}
+		if err = r.updateStatusWithDockerImageAndVersion(broker.Id, brokerConfig, log); err != nil {
+			return err
+		}
 		if err = r.reconcilePerBrokerDynamicConfig(broker.Id, brokerConfig, configMap, log); err != nil {
 			return err
 		}
 	}
 
-	if err = r.reconcileClusterWideDynamicConfig(log); err != nil {
+	if err = r.reconcileClusterWideDynamicConfig(); err != nil {
 		return err
 	}
 
@@ -562,6 +566,24 @@ func (r *Reconciler) reconcileKafkaPod(log logr.Logger, desiredPod *corev1.Pod, 
 	return nil
 }
 
+func (r *Reconciler) updateStatusWithDockerImageAndVersion(brokerId int32, brokerConfig *v1beta1.BrokerConfig,
+	log logr.Logger) error {
+	jmxExp := jmxextractor.NewJMXExtractor(r.KafkaCluster.GetNamespace(),
+		r.KafkaCluster.Spec.GetKubernetesClusterDomain(), r.KafkaCluster.GetName(), log)
+
+	kafkaVersion, err := jmxExp.ExtractDockerImageAndVersion(brokerId, brokerConfig,
+		r.KafkaCluster.Spec.GetClusterImage(), r.KafkaCluster.Spec.HeadlessServiceEnabled)
+	if err != nil {
+		return err
+	}
+	err = k8sutil.UpdateBrokerStatus(r.Client, []string{strconv.Itoa(int(brokerId))}, r.KafkaCluster,
+		*kafkaVersion, log)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (r *Reconciler) handleRollingUpgrade(log logr.Logger, desiredPod, currentPod *corev1.Pod, desiredType reflect.Type) error {
 	//Since toleration does not support patchStrategy:"merge,retainKeys",
 	//we need to add all toleration from the current pod if the toleration is set in the CR
@@ -628,15 +650,11 @@ func (r *Reconciler) handleRollingUpgrade(log logr.Logger, desiredPod, currentPo
 
 			errorCount := r.KafkaCluster.Status.RollingUpgrade.ErrorCount
 
-			kClient, err := r.kafkaClientProvider.NewFromCluster(r.Client, r.KafkaCluster)
+			kClient, close, err := r.kafkaClientProvider.NewFromCluster(r.Client, r.KafkaCluster)
 			if err != nil {
 				return errorfactory.New(errorfactory.BrokersUnreachable{}, err, "could not connect to kafka brokers")
 			}
-			defer func() {
-				if err := kClient.Close(); err != nil {
-					log.Error(err, "could not close client")
-				}
-			}()
+			defer close()
 			offlineReplicaCount, err := kClient.OfflineReplicaCount()
 			if err != nil {
 				return errors.WrapIf(err, "health check failed")
@@ -866,7 +884,7 @@ func (r *Reconciler) createExternalListenerStatuses(log logr.Logger) (map[string
 				portNumber := eListener.ExternalStartingPort + broker.Id
 
 				if eListener.GetAccessMethod() != corev1.ServiceTypeLoadBalancer {
-					bConfig, err := util.GetBrokerConfig(broker, r.KafkaCluster.Spec)
+					bConfig, err := broker.GetBrokerConfig(r.KafkaCluster.Spec)
 					if err != nil {
 						return nil, err
 					}
@@ -889,7 +907,7 @@ func (r *Reconciler) createExternalListenerStatuses(log logr.Logger) (map[string
 						brokerHost = fmt.Sprintf("%s-%d-%s.%s%s", r.KafkaCluster.Name, broker.Id, eListener.Name, r.KafkaCluster.Namespace, brokerHost)
 					}
 				}
-				brokerConfig, err := util.GetBrokerConfig(broker, r.KafkaCluster.Spec)
+				brokerConfig, err := broker.GetBrokerConfig(r.KafkaCluster.Spec)
 				if err != nil {
 					return nil, err
 				}
@@ -967,16 +985,12 @@ func getServiceFromExternalListener(client client.Client, cluster *v1beta1.Kafka
 }
 
 func (r *Reconciler) reorderBrokers(log logr.Logger, brokers []v1beta1.Broker) []v1beta1.Broker {
-	kClient, err := r.kafkaClientProvider.NewFromCluster(r.Client, r.KafkaCluster)
+	kClient, close, err := r.kafkaClientProvider.NewFromCluster(r.Client, r.KafkaCluster)
 	if err != nil {
 		log.Info("could not create Kafka client, thus could not determine controller")
 		return brokers
 	}
-	defer func() {
-		if err := kClient.Close(); err != nil {
-			log.Error(err, "could not close client")
-		}
-	}()
+	defer close()
 
 	_, controllerID, err := kClient.DescribeCluster()
 	if err != nil {

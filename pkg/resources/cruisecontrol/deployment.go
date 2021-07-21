@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/banzaicloud/kafka-operator/api/v1beta1"
+	"github.com/banzaicloud/kafka-operator/pkg/k8sutil"
 	"github.com/banzaicloud/kafka-operator/pkg/resources/cruisecontrolmonitoring"
 	"github.com/banzaicloud/kafka-operator/pkg/resources/templates"
 	"github.com/banzaicloud/kafka-operator/pkg/util"
@@ -84,6 +85,7 @@ func (r *Reconciler) deployment(podAnnotations map[string]string) runtime.Object
 									MountPath: jmxVolumePath,
 								},
 							},
+							Resources: k8sutil.GetDefaultInitContainerResourceRequirements(),
 						},
 					}...),
 					Containers: []corev1.Container{

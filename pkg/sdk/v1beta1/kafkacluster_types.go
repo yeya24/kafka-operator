@@ -17,6 +17,9 @@ package v1beta1
 import (
 	"strings"
 
+	"emperror.dev/errors"
+	"github.com/imdario/mergo"
+
 	"github.com/banzaicloud/istio-client-go/pkg/networking/v1alpha3"
 
 	cmmeta "github.com/jetstack/cert-manager/pkg/apis/meta/v1"
@@ -59,16 +62,19 @@ type KafkaClusterSpec struct {
 	IngressController string `json:"ingressController,omitempty"`
 	// If true OneBrokerPerNode ensures that each kafka broker will be placed on a different node unless a custom
 	// Affinity definition overrides this behavior
-	OneBrokerPerNode        bool                `json:"oneBrokerPerNode"`
-	PropagateLabels         bool                `json:"propagateLabels,omitempty"`
-	CruiseControlConfig     CruiseControlConfig `json:"cruiseControlConfig"`
-	EnvoyConfig             EnvoyConfig         `json:"envoyConfig,omitempty"`
-	MonitoringConfig        MonitoringConfig    `json:"monitoringConfig,omitempty"`
-	VaultConfig             VaultConfig         `json:"vaultConfig,omitempty"`
-	AlertManagerConfig      *AlertManagerConfig `json:"alertManagerConfig,omitempty"`
-	IstioIngressConfig      IstioIngressConfig  `json:"istioIngressConfig,omitempty"`
-	Envs                    []corev1.EnvVar     `json:"envs,omitempty"`
-	KubernetesClusterDomain string              `json:"kubernetesClusterDomain,omitempty"`
+	OneBrokerPerNode    bool                `json:"oneBrokerPerNode"`
+	PropagateLabels     bool                `json:"propagateLabels,omitempty"`
+	CruiseControlConfig CruiseControlConfig `json:"cruiseControlConfig"`
+	EnvoyConfig         EnvoyConfig         `json:"envoyConfig,omitempty"`
+	MonitoringConfig    MonitoringConfig    `json:"monitoringConfig,omitempty"`
+	VaultConfig         VaultConfig         `json:"vaultConfig,omitempty"`
+	AlertManagerConfig  *AlertManagerConfig `json:"alertManagerConfig,omitempty"`
+	IstioIngressConfig  IstioIngressConfig  `json:"istioIngressConfig,omitempty"`
+	// Envs defines environment variables for Kafka broker Pods.
+	// Adding the "+" prefix to the name prepends the value to that environment variable instead of overwriting it.
+	// Add the "+" suffix to append.
+	Envs                    []corev1.EnvVar `json:"envs,omitempty"`
+	KubernetesClusterDomain string          `json:"kubernetesClusterDomain,omitempty"`
 }
 
 // KafkaClusterStatus defines the observed state of KafkaCluster
@@ -154,6 +160,10 @@ type BrokerConfig struct {
 	Volumes []corev1.Volume `json:"volumes,omitempty"`
 	// VolumeMounts define some extra Kubernetes VolumeMounts for the Kafka broker Pods.
 	VolumeMounts []corev1.VolumeMount `json:"volumeMounts,omitempty"`
+	// Envs defines environment variables for Kafka broker Pods.
+	// Adding the "+" prefix to the name prepends the value to that environment variable instead of overwriting it.
+	// Add the "+" suffix to append.
+	Envs []corev1.EnvVar `json:"envs,omitempty"`
 }
 
 type NetworkConfig struct {
@@ -216,6 +226,7 @@ type EnvoyConfig struct {
 	Replicas           int32                         `json:"replicas,omitempty"`
 	ServiceAccountName string                        `json:"serviceAccountName,omitempty"`
 	ImagePullSecrets   []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
+	Affinity           *corev1.Affinity              `json:"affinity,omitempty"`
 	NodeSelector       map[string]string             `json:"nodeSelector,omitempty"`
 	Tolerations        []corev1.Toleration           `json:"tolerations,omitempty"`
 	// Annotations defines the annotations placed on the envoy ingress controller deployment
@@ -406,9 +417,10 @@ type InternalListenerConfig struct {
 // CommonListenerSpec defines the common building block for Listener type
 type CommonListenerSpec struct {
 	// +kubebuilder:validation:Enum=ssl;plaintext;sasl_ssl;sasl_plaintext
-	Type          SecurityProtocol `json:"type"`
-	Name          string           `json:"name"`
-	ContainerPort int32            `json:"containerPort"`
+	Type SecurityProtocol `json:"type"`
+	// +kubebuilder:validation:Pattern=^[a-z0-9\-]+
+	Name          string `json:"name"`
+	ContainerPort int32  `json:"containerPort"`
 }
 
 // ListenerStatuses holds information about the statuses of the configured listeners.
@@ -537,7 +549,7 @@ func (kSpec *KafkaClusterSpec) GetClusterImage() string {
 	if kSpec.ClusterImage != "" {
 		return kSpec.ClusterImage
 	}
-	return "ghcr.io/banzaicloud/kafka:2.13-2.7.0-bzc.2"
+	return "ghcr.io/banzaicloud/kafka:2.13-2.8.0"
 }
 
 func (cTaskSpec *CruiseControlTaskSpec) GetDurationMinutes() float64 {
@@ -612,6 +624,11 @@ func (cConfig *CruiseControlConfig) GetNodeSelector() map[string]string {
 //GetNodeSelector returns the node selector for envoy
 func (eConfig *EnvoyConfig) GetNodeSelector() map[string]string {
 	return eConfig.NodeSelector
+}
+
+//GetAffinity returns the Affinity config for envoy
+func (eConfig *EnvoyConfig) GetAffinity() *corev1.Affinity {
+	return eConfig.Affinity
 }
 
 //GetNodeSelector returns the node selector for the given broker
@@ -719,7 +736,7 @@ func (eConfig *EnvoyConfig) GetEnvoyImage() string {
 		return eConfig.Image
 	}
 
-	return "envoyproxy/envoy:v1.14.4"
+	return "envoyproxy/envoy:v1.18.3"
 }
 
 // GetEnvoyAdminPort returns the envoy admin port
@@ -811,7 +828,7 @@ func (mConfig *MonitoringConfig) GetImage() string {
 	if mConfig.JmxImage != "" {
 		return mConfig.JmxImage
 	}
-	return "ghcr.io/banzaicloud/jmx-javaagent:0.14.0"
+	return "ghcr.io/banzaicloud/jmx-javaagent:0.15.0"
 }
 
 // GetPathToJar returns the path in the used Image for Prometheus JMX exporter
@@ -819,7 +836,7 @@ func (mConfig *MonitoringConfig) GetPathToJar() string {
 	if mConfig.PathToJar != "" {
 		return mConfig.PathToJar
 	}
-	return "/opt/jmx_exporter/jmx_prometheus_javaagent-0.14.0.jar"
+	return "/jmx_prometheus_javaagent.jar"
 }
 
 // GetKafkaJMXExporterConfig returns the config for Kafka Prometheus JMX exporter
@@ -831,11 +848,13 @@ func (mConfig *MonitoringConfig) GetKafkaJMXExporterConfig() string {
 	return `lowercaseOutputName: true
 rules:
 # Special cases and very specific rules
-- pattern : 'kafka.server<type=app-info><>version: (.*)'
-  name: kafka_server_app_info
-  value: 1.0
+- pattern: 'kafka.server<type=(app-info), id=(\d+)><>(Version): ([-.~+\w\d]+)'
+  name: kafka_server_$1_$3
+  type: COUNTER
   labels:
-    version: "$1"
+    broker_id: $2
+    version: $4
+  value: 1.0
 - pattern : kafka.server<type=(.+), name=(.+), clientId=(.+), topic=(.+), partition=(.*)><>Value
   name: kafka_server_$1_$2
   type: GAUGE
@@ -1053,6 +1072,83 @@ func (mConfig *MonitoringConfig) GetCCJMXExporterConfig() string {
 	return `
     lowercaseOutputName: true
 `
+}
+
+// GetBrokerConfig composes the brokerConfig for a given broker using the broker's config group
+func (b *Broker) GetBrokerConfig(kafkaClusterSpec KafkaClusterSpec) (*BrokerConfig, error) {
+	brokerConfigGroups := kafkaClusterSpec.BrokerConfigGroups
+
+	bConfig := &BrokerConfig{}
+	if b.BrokerConfigGroup == "" {
+		return b.BrokerConfig, nil
+	} else if b.BrokerConfig != nil {
+		bConfig = b.BrokerConfig.DeepCopy()
+	}
+
+	groupConfig, exists := brokerConfigGroups[b.BrokerConfigGroup]
+	if !exists {
+		return nil, errors.NewWithDetails("missing brokerConfigGroup", "key", b.BrokerConfigGroup)
+	}
+
+	dstAffinity, err := mergeAffinity(groupConfig, bConfig)
+	if err != nil {
+		return nil, errors.WrapIf(err, "could not merge brokerConfig.Affinity with ConfigGroup.Affinity")
+	}
+	envs := mergeEnvs(kafkaClusterSpec, &groupConfig, bConfig)
+
+	err = mergo.Merge(bConfig, groupConfig, mergo.WithAppendSlice)
+	if err != nil {
+		return nil, errors.WrapIf(err, "could not merge brokerConfig with ConfigGroup")
+	}
+
+	bConfig.StorageConfigs = dedupStorageConfigs(bConfig.StorageConfigs)
+	if groupConfig.Affinity != nil || bConfig.Affinity != nil {
+		bConfig.Affinity = dstAffinity
+	}
+	bConfig.Envs = envs
+
+	return bConfig, nil
+}
+
+func mergeEnvs(kafkaClusterSpec KafkaClusterSpec, groupConfig, bConfig *BrokerConfig) []corev1.EnvVar {
+	var envs []corev1.EnvVar
+	envs = append(envs, kafkaClusterSpec.Envs...)
+	envs = append(envs, groupConfig.Envs...)
+	if bConfig != nil {
+		envs = append(envs, bConfig.Envs...)
+	}
+	return envs
+}
+
+func mergeAffinity(groupConfig BrokerConfig, bConfig *BrokerConfig) (*corev1.Affinity, error) {
+	dstAffinity := &corev1.Affinity{}
+	srcAffinity := &corev1.Affinity{}
+
+	if groupConfig.Affinity != nil {
+		dstAffinity = groupConfig.Affinity.DeepCopy()
+	}
+	if bConfig.Affinity != nil {
+		srcAffinity = bConfig.Affinity
+	}
+
+	if err := mergo.Merge(dstAffinity, srcAffinity, mergo.WithOverride); err != nil {
+		return nil, err
+	}
+	return dstAffinity, nil
+}
+
+func dedupStorageConfigs(elements []StorageConfig) []StorageConfig {
+	encountered := make(map[string]struct{})
+	var result []StorageConfig
+
+	for _, v := range elements {
+		if _, ok := encountered[v.MountPath]; !ok {
+			encountered[v.MountPath] = struct{}{}
+			result = append(result, v)
+		}
+	}
+
+	return result
 }
 
 func cloneAnnotationMap(original map[string]string) map[string]string {

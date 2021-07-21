@@ -250,13 +250,12 @@ func expectKafkaBrokerPod(kafkaCluster *v1beta1.KafkaCluster, broker v1beta1.Bro
 	Expect(pod.Spec.Containers).To(HaveLen(1))
 	container := pod.Spec.Containers[0]
 	Expect(container.Name).To(Equal("kafka"))
-	Expect(container.Image).To(Equal("ghcr.io/banzaicloud/kafka:2.13-2.7.0-bzc.2"))
+	Expect(container.Image).To(Equal("ghcr.io/banzaicloud/kafka:2.13-2.8.0"))
 	Expect(container.Lifecycle).NotTo(BeNil())
 	Expect(container.Lifecycle.PreStop).NotTo(BeNil())
 	getEnvName := func(c corev1.EnvVar) string { return c.Name }
 	Expect(container.Env).To(ConsistOf(
 		// the exact value is not interesting
-		WithTransform(getEnvName, Equal("CLASSPATH")),
 		WithTransform(getEnvName, Equal("KAFKA_OPTS")),
 		WithTransform(getEnvName, Equal("KAFKA_JVM_PERFORMANCE_OPTS")),
 
@@ -273,6 +272,18 @@ func expectKafkaBrokerPod(kafkaCluster *v1beta1.KafkaCluster, broker v1beta1.Bro
 		corev1.EnvVar{
 			Name:  "KAFKA_HEAP_OPTS",
 			Value: "-Xmx2G -Xms2G",
+		},
+		corev1.EnvVar{
+			Name:  "ENVVAR1",
+			Value: "VALUE1 VALUE2",
+		},
+		corev1.EnvVar{
+			Name:  "ENVVAR2",
+			Value: "VALUE2",
+		},
+		corev1.EnvVar{
+			Name:  "CLASSPATH",
+			Value: "/opt/kafka/libs/extensions/*:/test/class/path",
 		},
 	))
 	Expect(container.VolumeMounts).To(HaveLen(8))
@@ -434,4 +445,8 @@ func expectKafkaCRStatus(kafkaCluster *v1beta1.KafkaCluster) {
 			},
 		},
 	}))
+	for _, brokerState := range kafkaCluster.Status.BrokersState {
+		Expect(brokerState.Version).To(Equal("2.7.0"))
+		Expect(brokerState.Image).To(Equal(kafkaCluster.Spec.GetClusterImage()))
+	}
 }

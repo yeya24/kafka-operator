@@ -1,3 +1,6 @@
+SHELL = /bin/bash
+.SHELLFLAGS := -eu -o pipefail -c
+
 # Image URL to use all building/pushing image targets
 TAG ?= $(shell git describe --tags --abbrev=0 --match 'v[0-9].*[0-9].*[0-9]' 2>/dev/null )
 IMG ?= ghcr.io/banzaicloud/kafka-operator:$(TAG)
@@ -14,7 +17,7 @@ GOLANGCI_VERSION = 1.38.0
 LICENSEI_VERSION = 0.2.0
 GOPROXY=https://proxy.golang.org
 
-CONTROLLER_GEN_VERSION = v0.4.1
+CONTROLLER_GEN_VERSION = v0.5.0
 CONTROLLER_GEN = $(PWD)/bin/controller-gen
 
 KUSTOMIZE_BASE = config/overlays/specific-manager-version
@@ -70,16 +73,13 @@ install-kustomize:
 		scripts/install_kustomize.sh;\
 	fi
 
-# Install kubebuilder
-install-kubebuilder:
-	@ if ! which bin/kubebuilder/bin/kubebuilder &>/dev/null; then\
-		scripts/install_kubebuilder.sh;\
-	fi
-
 # Run tests
-test: install-kubebuilder generate fmt vet manifests
+ENVTEST_ASSETS_DIR=$(shell pwd)/testbin
+test: generate fmt vet manifests
 	cd pkg/sdk && go test ./...
-	KUBEBUILDER_ASSETS="$${PWD}/bin/kubebuilder/bin" go test ./... -coverprofile cover.out
+	mkdir -p ${ENVTEST_ASSETS_DIR}
+	test -f ${ENVTEST_ASSETS_DIR}/setup-envtest.sh || curl -sSLo ${ENVTEST_ASSETS_DIR}/setup-envtest.sh https://raw.githubusercontent.com/kubernetes-sigs/controller-runtime/v0.8.3/hack/setup-envtest.sh
+	source ${ENVTEST_ASSETS_DIR}/setup-envtest.sh; fetch_envtest_tools $(ENVTEST_ASSETS_DIR); setup_envtest_env $(ENVTEST_ASSETS_DIR);  go test ./... -coverprofile cover.out
 	cd properties && go test -coverprofile cover.out -cover -failfast -v -covermode=count ./pkg/... ./internal/...
 
 # Build manager binary

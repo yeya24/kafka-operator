@@ -15,6 +15,7 @@
 package kafka
 
 import (
+	"reflect"
 	"testing"
 
 	"gotest.tools/assert"
@@ -22,7 +23,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/banzaicloud/kafka-operator/api/v1beta1"
-	"github.com/banzaicloud/kafka-operator/pkg/util"
 )
 
 func TestGetAffinity(t *testing.T) {
@@ -46,7 +46,7 @@ func TestGetAffinity(t *testing.T) {
 
 	cluster := v1beta1.KafkaCluster{
 		ObjectMeta: metav1.ObjectMeta{
-			ClusterName: "name",
+			Name: "name",
 		},
 		Spec: v1beta1.KafkaClusterSpec{
 			BrokerConfigGroups: map[string]v1beta1.BrokerConfig{
@@ -64,18 +64,22 @@ func TestGetAffinity(t *testing.T) {
 	affinity := getAffinity(&nilAffinityBrokerConfig, &cluster)
 	assert.DeepEqual(t, affinity.PodAntiAffinity, defaultPodAntiAffinity.PodAntiAffinity)
 
-	mergedAffinityBrokerConfig, _ := util.GetBrokerConfig(v1beta1.Broker{
+	broker := v1beta1.Broker{
 		BrokerConfig: &nilAffinityBrokerConfig,
-	}, cluster.Spec)
+	}
+
+	mergedAffinityBrokerConfig, _ := broker.GetBrokerConfig(cluster.Spec)
 
 	// expecting old behavior
 	affinity = getAffinity(mergedAffinityBrokerConfig, &cluster)
 	assert.DeepEqual(t, affinity.PodAntiAffinity, defaultPodAntiAffinity.PodAntiAffinity)
 
-	mergedAffinityBrokerConfig2, _ := util.GetBrokerConfig(v1beta1.Broker{
+	broker = v1beta1.Broker{
 		BrokerConfigGroup: "test",
 		BrokerConfig:      &nilAffinityBrokerConfig,
-	}, cluster.Spec)
+	}
+
+	mergedAffinityBrokerConfig2, _ := broker.GetBrokerConfig(cluster.Spec)
 
 	// expecting old behavior
 	affinity = getAffinity(mergedAffinityBrokerConfig2, &cluster)
@@ -94,4 +98,90 @@ func TestGetAffinity(t *testing.T) {
 	// should just return what was given as an input
 	affinity = getAffinity(&nonNilAffinityBrokerConfig, &cluster)
 	assert.DeepEqual(t, affinity, nonNilAffinityBrokerConfig.Affinity.DeepCopy())
+}
+
+func Test_generateEnvConfig(t *testing.T) {
+	expected := []corev1.EnvVar{
+		{Name: "KAFKA_HEAP_OPTS", Value: "-Xmx2G -Xms2G"},
+		{Name: "KAFKA_JVM_PERFORMANCE_OPTS", Value: "-server -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:InitiatingHeapOccupancyPercent=35 -XX:+ExplicitGCInvokesConcurrent -Djava.awt.headless=true -Dsun.net.inetaddr.ttl=60"},
+		{Name: "a", Value: "global"},
+		{Name: "b", Value: "group"},
+		{Name: "c", Value: "broker"},
+		{Name: "d", Value: "global"},
+		{Name: "e", Value: "codegroup"},
+		{Name: "f", Value: "broker"},
+		{Name: "g", Value: "group"},
+		{Name: "h", Value: "broker"},
+		{Name: "i", Value: "groupbroker"},
+		{Name: "j", Value: "broker"},
+		{Name: "k", Value: "brokerglobal group"},
+		{Name: "l", Value: "broker group"},
+		{Name: "m", Value: "globalgroupbroker"},
+		{Name: "n", Value: ""},
+		{Name: "o", Value: "brokergroupglobal"},
+	}
+
+	broker := v1beta1.Broker{
+		Id:                0,
+		BrokerConfigGroup: "default",
+		BrokerConfig: &v1beta1.BrokerConfig{
+			Envs: []corev1.EnvVar{
+				{Name: "c", Value: "broker"},
+				{Name: "f+ ", Value: "broker"},
+				{Name: " h", Value: "broker"},
+				{Name: "i+", Value: "broker"},
+				{Name: "j", Value: "broker"},
+				{Name: " +k", Value: "broker"},
+				{Name: "+l", Value: "broker"},
+				{Name: "m+ ", Value: "broker"},
+				{Name: " +o", Value: "broker"},
+			},
+		},
+	}
+
+	spec := v1beta1.KafkaClusterSpec{
+		Envs: []corev1.EnvVar{
+			{Name: "a", Value: "global"},
+			{Name: "d+", Value: "global"},
+			{Name: "g", Value: "global"},
+			{Name: "i+", Value: "global"},
+			{Name: "j", Value: "global"},
+			{Name: "k", Value: "global"},
+			{Name: "m+", Value: "global"},
+			{Name: "n", Value: ""},
+			{Name: " +o ", Value: "global"},
+		},
+		BrokerConfigGroups: map[string]v1beta1.BrokerConfig{
+			"default": {
+				Envs: []corev1.EnvVar{
+					{Name: "b", Value: "group"},
+					{Name: "e+", Value: "group"},
+					{Name: "g", Value: "group"},
+					{Name: "h", Value: "group"},
+					{Name: "i", Value: "group"},
+					{Name: "j+ ", Value: "group"},
+					{Name: "k+", Value: " group"},
+					{Name: "l+ ", Value: " group"},
+					{Name: "m+", Value: "group"},
+					{Name: "+o ", Value: "group"},
+				},
+			},
+		},
+	}
+
+	brokerConfig, err := broker.GetBrokerConfig(spec)
+	if err != nil {
+		t.Error("GetBrokerConfig failed")
+	}
+
+	result := generateEnvConfig(brokerConfig, []corev1.EnvVar{
+		{Name: "b", Value: "code"},
+		{Name: "e", Value: "code"},
+	})
+	if err != nil {
+		t.Error("Error GetBrokerConfig throw an unexpected error")
+	}
+	if !reflect.DeepEqual(result, expected) {
+		t.Error("Expected:", expected, "Got:", result)
+	}
 }

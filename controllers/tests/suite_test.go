@@ -31,7 +31,6 @@ package tests
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -45,7 +44,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	k8sscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -53,8 +51,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	cmv1alpha2 "github.com/jetstack/cert-manager/pkg/apis/certmanager/v1alpha2"
-	cmv1alpha3 "github.com/jetstack/cert-manager/pkg/apis/certmanager/v1alpha3"
+	cmv1 "github.com/jetstack/cert-manager/pkg/apis/certmanager/v1"
 
 	istioclientv1alpha3 "github.com/banzaicloud/istio-client-go/pkg/networking/v1alpha3"
 	banzaiistiov1beta1 "github.com/banzaicloud/istio-operator/pkg/apis/istio/v1beta1"
@@ -62,6 +59,7 @@ import (
 	banzaicloudv1alpha1 "github.com/banzaicloud/kafka-operator/api/v1alpha1"
 	banzaicloudv1beta1 "github.com/banzaicloud/kafka-operator/api/v1beta1"
 	"github.com/banzaicloud/kafka-operator/controllers"
+	"github.com/banzaicloud/kafka-operator/pkg/jmxextractor"
 	"github.com/banzaicloud/kafka-operator/pkg/kafkaclient"
 	"github.com/banzaicloud/kafka-operator/pkg/scale"
 	// +kubebuilder:scaffold:imports
@@ -70,7 +68,6 @@ import (
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
-var cfg *rest.Config
 var k8sClient client.Client
 var testEnv *envtest.Environment
 var mockKafkaClients map[types.NamespacedName]kafkaclient.KafkaClient
@@ -92,21 +89,14 @@ var _ = BeforeSuite(func(done Done) {
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths: []string{
 			filepath.Join("..", "..", "config", "base", "crds"),
-			// "https://github.com/jetstack/cert-manager/releases/download/v1.1.0/cert-manager.yaml",
 			filepath.Join("..", "..", "config", "test", "crd", "cert-manager"),
 			filepath.Join("..", "..", "config", "test", "crd", "istio"),
 		},
 		AttachControlPlaneOutput: false,
+		ErrorIfCRDPathMissing:    true,
 	}
 
-	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		err := os.Setenv("KUBEBUILDER_ASSETS", filepath.Join("..", "..", "bin", "kubebuilder", "bin"))
-		Expect(err).ToNot(HaveOccurred())
-	}
-
-	var err error
-
-	cfg, err = testEnv.Start()
+	cfg, err := testEnv.Start()
 	Expect(err).ToNot(HaveOccurred())
 	Expect(cfg).ToNot(BeNil())
 
@@ -115,14 +105,17 @@ var _ = BeforeSuite(func(done Done) {
 	Expect(k8sscheme.AddToScheme(scheme)).To(Succeed())
 	Expect(apiextensionsv1beta1.AddToScheme(scheme)).To(Succeed())
 	Expect(apiv1.AddToScheme(scheme)).To(Succeed())
-	Expect(cmv1alpha2.AddToScheme(scheme)).To(Succeed())
-	Expect(cmv1alpha3.AddToScheme(scheme)).To(Succeed())
+	Expect(cmv1.AddToScheme(scheme)).To(Succeed())
 	Expect(banzaicloudv1alpha1.AddToScheme(scheme)).To(Succeed())
 	Expect(banzaicloudv1beta1.AddToScheme(scheme)).To(Succeed())
 	Expect(banzaiistiov1beta1.AddToScheme(scheme)).To(Succeed())
 	Expect(istioclientv1alpha3.AddToScheme(scheme)).To(Succeed())
 
 	// +kubebuilder:scaffold:scheme
+
+	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
+	Expect(err).NotTo(HaveOccurred())
+	Expect(k8sClient).NotTo(BeNil())
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:             scheme,
@@ -134,13 +127,15 @@ var _ = BeforeSuite(func(done Done) {
 	Expect(mgr).ToNot(BeNil())
 
 	scale.MockNewCruiseControlScaler()
+	jmxextractor.NewMockJMXExtractor()
 
 	mockKafkaClients = make(map[types.NamespacedName]kafkaclient.KafkaClient)
 
 	// mock the creation of Kafka clients
 	controllers.SetNewKafkaFromCluster(
-		func(k8sclient client.Client, cluster *banzaicloudv1beta1.KafkaCluster) (kafkaclient.KafkaClient, error) {
-			return getMockedKafkaClientForCluster(cluster), nil
+		func(k8sclient client.Client, cluster *banzaicloudv1beta1.KafkaCluster) (kafkaclient.KafkaClient, func(), error) {
+			client, close := getMockedKafkaClientForCluster(cluster)
+			return client, close, nil
 		})
 
 	kafkaClusterReconciler := controllers.KafkaClusterReconciler{
@@ -154,7 +149,7 @@ var _ = BeforeSuite(func(done Done) {
 	err = controllers.SetupKafkaClusterWithManager(mgr, kafkaClusterReconciler.Log).Complete(&kafkaClusterReconciler)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = controllers.SetupKafkaTopicWithManager(mgr)
+	err = controllers.SetupKafkaTopicWithManager(mgr, 10)
 	Expect(err).NotTo(HaveOccurred())
 
 	err = controllers.SetupKafkaUserWithManager(mgr, true)

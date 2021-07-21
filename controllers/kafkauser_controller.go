@@ -22,7 +22,7 @@ import (
 
 	"emperror.dev/errors"
 	"github.com/go-logr/logr"
-	certv1 "github.com/jetstack/cert-manager/pkg/apis/certmanager/v1alpha2"
+	certv1 "github.com/jetstack/cert-manager/pkg/apis/certmanager/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -101,13 +101,10 @@ type KafkaUserReconciler struct {
 
 // Reconcile reads that state of the cluster for a KafkaUser object and makes changes based on the state read
 // and what is in the KafkaUser.Spec
-func (r *KafkaUserReconciler) Reconcile(request reconcile.Request) (reconcile.Result, error) {
+func (r *KafkaUserReconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	reqLogger := r.Log.WithValues("kafkauser", request.NamespacedName, "Request.Name", request.Name)
 	reqLogger.Info("Reconciling KafkaUser")
 	var err error
-
-	// create a context for the request
-	ctx := context.Background()
 
 	// Fetch the KafkaUser instance
 	instance := &v1alpha1.KafkaUser{}
@@ -218,7 +215,7 @@ func (r *KafkaUserReconciler) Reconcile(request reconcile.Request) (reconcile.Re
 
 	// If topic grants supplied, grab a broker connection and set ACLs
 	if len(instance.Spec.TopicGrants) > 0 {
-		broker, close, err := newBrokerConnection(reqLogger, r.Client, cluster)
+		broker, close, err := newKafkaFromCluster(r.Client, cluster)
 		if err != nil {
 			return checkBrokerConnectionError(reqLogger, err)
 		}
@@ -305,7 +302,7 @@ func (r *KafkaUserReconciler) finalizeKafkaUserACLs(reqLogger logr.Logger, clust
 	}
 	var err error
 	reqLogger.Info("Deleting user ACLs from kafka")
-	broker, close, err := newBrokerConnection(reqLogger, r.Client, cluster)
+	broker, close, err := newKafkaFromCluster(r.Client, cluster)
 	if err != nil {
 		return err
 	}

@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/banzaicloud/kafka-operator/api/v1beta1"
+	"github.com/banzaicloud/kafka-operator/pkg/k8sutil"
 	"github.com/banzaicloud/kafka-operator/pkg/resources/kafkamonitoring"
 	"github.com/banzaicloud/kafka-operator/pkg/resources/templates"
 	"github.com/banzaicloud/kafka-operator/pkg/util"
@@ -149,7 +150,8 @@ fi`},
 								},
 							},
 						},
-					}, r.KafkaCluster.Spec.Envs),
+					}),
+
 					Command: command,
 					Ports: append(kafkaBrokerContainerPorts, []corev1.ContainerPort{
 						{
@@ -192,6 +194,7 @@ func getInitContainers(brokerConfigInitContainers []corev1.Container, kafkaClust
 				Name:      "extensions",
 				MountPath: "/opt/kafka/libs/extensions",
 			}},
+			Resources: k8sutil.GetDefaultInitContainerResourceRequirements(),
 		},
 		{
 			Name:    "jmx-exporter",
@@ -203,6 +206,7 @@ func getInitContainers(brokerConfigInitContainers []corev1.Container, kafkaClust
 					MountPath: jmxVolumePath,
 				},
 			},
+			Resources: k8sutil.GetDefaultInitContainerResourceRequirements(),
 		},
 	}...)
 
@@ -314,7 +318,7 @@ func getVolumes(brokerConfigVolumes, dataVolume []corev1.Volume, kafkaClusterNam
 // or if there is any user Affinity definition provided by the user the latter will be used ignoring the value of `OneBrokerPerNode`
 func getAffinity(bc *v1beta1.BrokerConfig, cluster *v1beta1.KafkaCluster) *corev1.Affinity {
 	if bc.Affinity == nil {
-		return &corev1.Affinity{PodAntiAffinity: generatePodAntiAffinity(cluster.ClusterName, cluster.Spec.OneBrokerPerNode)}
+		return &corev1.Affinity{PodAntiAffinity: generatePodAntiAffinity(cluster.Name, cluster.Spec.OneBrokerPerNode)}
 	}
 	return bc.Affinity
 }
@@ -404,15 +408,44 @@ func generateVolumeMountForSSL() []corev1.VolumeMount {
 	}
 }
 
-func generateEnvConfig(brokerConfig *v1beta1.BrokerConfig, defaultEnvVars, clusterEnvVars []corev1.EnvVar) []corev1.EnvVar {
+func generateEnvConfig(brokerConfig *v1beta1.BrokerConfig, defaultEnvVars []corev1.EnvVar) []corev1.EnvVar {
 	envs := map[string]corev1.EnvVar{}
 
 	for _, v := range defaultEnvVars {
 		envs[v.Name] = v
 	}
 
-	for _, v := range clusterEnvVars {
-		envs[v.Name] = v
+	// merge the env variables
+	for _, envVar := range brokerConfig.Envs {
+		envVarName := strings.TrimSpace(envVar.Name)
+		switch {
+		default:
+			fallthrough
+		case envVar.ValueFrom != nil:
+			// append/prepend based on sources is not supported
+			envVar.Name = envVarName
+			envs[envVarName] = envVar
+		case strings.HasPrefix(envVarName, "+"):
+			// prepend mode
+			envVarName = envVarName[1:]
+			if envVarFromMap, ok := envs[envVarName]; ok {
+				envVarFromMap.Value = envVar.Value + envVarFromMap.Value
+				envs[envVarName] = envVarFromMap
+			} else {
+				envVar.Name = envVarName
+				envs[envVarName] = envVar
+			}
+		case strings.HasSuffix(envVarName, "+"):
+			// append mode
+			envVarName = envVarName[:len(envVarName)-1]
+			if envVarFromMap, ok := envs[envVarName]; ok {
+				envVarFromMap.Value += envVar.Value
+				envs[envVarName] = envVarFromMap
+			} else {
+				envVar.Name = envVarName
+				envs[envVarName] = envVar
+			}
+		}
 	}
 
 	if brokerConfig.Log4jConfig != "" {

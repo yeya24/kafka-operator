@@ -23,7 +23,7 @@ import (
 	"github.com/banzaicloud/kafka-operator/api/v1beta1"
 	"github.com/banzaicloud/kafka-operator/pkg/errorfactory"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 var log = logf.Log.WithName("kafka_util")
@@ -111,16 +111,23 @@ func (k *kafkaClient) Close() error {
 }
 
 // NewFromCluster is a convenience wrapper around New() and ClusterConfig()
-func NewFromCluster(k8sclient client.Client, cluster *v1beta1.KafkaCluster) (KafkaClient, error) {
+func NewFromCluster(k8sclient client.Client, cluster *v1beta1.KafkaCluster) (KafkaClient, func(), error) {
 	var client KafkaClient
 	var err error
 	opts, err := ClusterConfig(k8sclient, cluster)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	client = New(opts)
 	err = client.Open()
-	return client, err
+	close := func() {
+		if err := client.Close(); err != nil {
+			log.Error(err, "Error closing Kafka client")
+		} else {
+			log.Info("Kafka client closed cleanly")
+		}
+	}
+	return client, close, err
 }
 
 func (k *kafkaClient) Brokers() map[int32]string {
